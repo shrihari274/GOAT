@@ -108,7 +108,7 @@ peline {
             steps {
                 script {
                     // Deploy the built image to your application VM
-                    sshagent(['your-ssh-credential-id']) {
+                    sshagent(['ssh-credential-id']) {
                         sh """
                         ssh -o StrictHostKeyChecking=no shree@192.168.74.127 \
                             "docker stop goat-app || true && \
