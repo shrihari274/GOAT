@@ -1,70 +1,80 @@
-pipeline {
+peline {
     agent any
+    
+    environment {
+        // Get the ThreatMapper API key from Jenkins credentials
+        TM_API_KEY = credentials('threatmapper-api-key')
+        TM_CONSOLE_URL = "192.168.74.125"
+        TM_CONSOLE_PORT = "443"
+        DOCKER_IMAGE = "goat-app:${BUILD_ID}"
+    }
+    
     stages {
-	stage('Pull project code'){
-		steps {
-			echo 'downloading git directory..'
-			git 'https://github.com/ibmappsec/GOAT.git'
-		}
-	}
-//	stage('Check git history'){
-//		steps{
-//			echo 'running talisman to check project history for secrets'
-//			sh '~/.talisman/bin/talisman_linux_amd64 --scan'
-//		}
-//	}   
-	stage('Prepare SCA tool'){
-		steps {
-			script{				
-				def exists = fileExists 'dependency-check-5.2.1-release.zip'
-				if(exists){
-					echo 'already exists'
-				}else{
-					sh 'wget https://dl.bintray.com/jeremy-long/owasp/dependency-check-5.2.1-release.zip'
-					sh 'unzip dependency-check-5.2.1-release.zip'				
-				}
-			}
-		}
-	}
-	stage('Package project') {
+        stage('Checkout') {
             steps {
-		    script{
-			echo 'Packing maven project'
-			    sh 'mvn install'
-		    }
+                git branch: 'master', url: 'https://github.com/shrihari274/GOAT'
             }
         }
-	stage('Run dependency check'){
-		steps {
-			echo 'running dependency check on java jar file'
-			//fail on CVS score over 7
-//			sh './dependency-check/bin/dependency-check.sh --project Testing --out m25.html --scan *.jar -f HTML --failOnCVSS 7'
-//			sh './dependency-check/bin/dependency-check.sh --project Testing --out webgoat.html --scan ./webgoat-server/target/*.jar.* -f HTML --failOnCVSS 7'
-//			sh './dependency-check/bin/dependency-check.sh --project Testing --out webwolf.html --scan ./webwolf/target/*.jar.* -f HTML --failOnCVSS 7'
-			//let it run all without fail-on-CVS condition to create reports
-//			sh './dependency-check/bin/dependency-check.sh --project Testing --out m25.html --scan *.jar -f HTML'
-			sh './dependency-check/bin/dependency-check.sh --project Testing --out webgoat.html --scan ./webgoat-server/target/*.jar -f HTML'
-			sh './dependency-check/bin/dependency-check.sh --project Testing --out webwolf.html --scan ./webwolf/target/*.jar -f HTML'
-
-		}
-	}
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Build the GOAT application Docker image
+                    sh 'docker build -t ${DOCKER_IMAGE} .'
+                }
+            }
+        }
+        
+        stage('Run ThreatMapper Scan') {
+            steps {
+                script {
+                    // Run ThreatMapper scan on the built image
+                    sh '''
+                    docker run --rm \
+                        -e DEEPFENCE_KEY="${TM_API_KEY}" \
+                        quay.io/deepfenceio/deepfence_agent_ce:2.5.7 \
+                        image scan --image-name ${DOCKER_IMAGE} \
+                        --management-console-url ${TM_CONSOLE_URL} \
+                        --management-console-port ${TM_CONSOLE_PORT} \
+                        --pipeline "${JOB_NAME}"
+                    '''
+                    
+                    // Alternatively, scan the running container (after deployment)
+                    // sh '''
+                    // docker run --rm \
+                    //     -e DEEPFENCE_KEY="${TM_API_KEY}" \
+                    //     quay.io/deepfenceio/deepfence_agent_ce:2.5.7 \
+                    //     scan --target <container-ip> \
+                    //     --management-console-url ${TM_CONSOLE_URL} \
+                    //     --management-console-port ${TM_CONSOLE_PORT} \
+                    //     --pipeline "${JOB_NAME}"
+                    // '''
+                }
+            }
+        }
+        
+        stage('Deploy to App VM') {
+            steps {
+                script {
+                    // Deploy the built image to your application VM
+                    // This requires SSH access to your App VM
+                    sshagent(['your-ssh-credential-id']) {
+                        sh """
+                        ssh -o StrictHostKeyChecking=no shree@192.168.74.127 \
+                            "docker stop goat-app || true && \
+                             docker rm goat-app || true && \
+                             docker run -d --name goat-app -p 80:3000 ${DOCKER_IMAGE}"
+                        """
+                    }
+                }
+            }
+        }
     }
+    
     post {
         always {
-            echo 'This will always run'
-        }
-        success {
-            echo 'This will run only if successful'
-        }
-        failure {
-            echo 'This will run only if failed'
-        }
-        unstable {
-            echo 'This will run only if the run was marked as unstable'
-        }
-        changed {
-            echo 'This will run only if the state of the Pipeline has changed'
-            echo 'For example, if the Pipeline was previously failing but is now successful'
+            // Clean up
+            sh 'docker rmi ${DOCKER_IMAGE} || true'
         }
     }
 }
